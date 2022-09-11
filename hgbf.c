@@ -30,19 +30,41 @@ typedef struct {
 
 static void init(void);
 static argparse_res_t parse_args(int argc, char *argv[]);
+static void interactive(const argparse_res_t *args, hgbf_eval_io_t eval_io);
+static int run_script(const argparse_res_t *args,
+	hgbf_istream_t *script, hgbf_eval_io_t eval_io);
 
 int main(int argc, char *argv[])
 {
+	int exit_status;
+
 	init();
 
 	const argparse_res_t args = parse_args(argc, argv);
+
 	if (args.memory_limit)
 		hgbf_memmax(args.memory_limit);
 
+	const hgbf_eval_io_t eval_io = {
+		.i = !args.istream_file ? hgbf_stdin() :
+			hgbf_istream_open_file(args.istream_file),
+		.o = !args.ostream_file ? hgbf_stdout() :
+			hgbf_ostream_open_file(args.ostream_file),
+	};
+	if (!eval_io.i) {
+		fprintf(stderr, "%s: failed to open input stream\n", args.program);
+		exit_status = EXIT_FAILURE;
+		goto bad_istream;
+	}
+	if (!eval_io.o) {
+		fprintf(stderr, "%s: failed to open output stream\n", args.program);
+		exit_status = EXIT_FAILURE;
+		goto bad_ostream;
+	}
+
 	if (args.interactive) {
-		fprintf(stderr, "%s: interactive mode has not been implemented\n",
-			args.program);
-		return EXIT_FAILURE;
+		interactive(&args, eval_io);
+		exit_status = EXIT_SUCCESS;
 	} else {
 		hgbf_istream_t *const script =
 			args.script_file ? !strcmp(args.script_file, "-") ?
@@ -50,40 +72,21 @@ int main(int argc, char *argv[])
 				hgbf_istream_open_mem(args.script_string, strlen(args.script_string));
 		if (!script) {
 			fprintf(stderr, "%s: failed to read the script\n", args.program);
-			return EXIT_FAILURE;
-		}
-		hgbf_code_t *const code = hgbf_code_compile(script);
-		hgbf_istream_close(script);
-		if (!code) {
-			fprintf(stderr, "%s: syntax error: %s\n", args.program, hgbf_err_read());
-			return EXIT_FAILURE;
-		}
-
-		const hgbf_eval_io_t eval_io = {
-			.i = !args.istream_file ? hgbf_stdin() :
-				hgbf_istream_open_file(args.istream_file),
-			.o = !args.ostream_file ? hgbf_stdout() :
-				hgbf_ostream_open_file(args.ostream_file),
-		};
-		if (!eval_io.i) {
-			fprintf(stderr, "%s: failed to open input stream\n", args.program);
-			return EXIT_FAILURE;
-		}
-		if (!eval_io.o) {
-			fprintf(stderr, "%s: failed to open output stream\n", args.program);
-			return EXIT_FAILURE;
-		}
-		const int eval_err = hgbf_eval(code, eval_io);
-		if (args.istream_file)
-			hgbf_istream_close(eval_io.i);
-		if (args.ostream_file)
-			hgbf_ostream_close(eval_io.o);
-		hgbf_code_free(code);
-		if (eval_err) {
-			fprintf(stderr, "%s: runtime error: %s\n", args.program, hgbf_err_read());
-			return EXIT_FAILURE;
+			exit_status = EXIT_FAILURE;
+		} else {
+			exit_status = run_script(&args, script, eval_io);
+			hgbf_istream_close(script);
 		}
 	}
+
+	if (args.ostream_file)
+		hgbf_ostream_close(eval_io.o);
+bad_ostream:
+	if (args.istream_file)
+		hgbf_istream_close(eval_io.i);
+bad_istream:
+
+	return exit_status;
 }
 
 static void init(void)
@@ -258,4 +261,62 @@ static argparse_res_t parse_args(int argc, char *argv[])
 			res.script_file = "-";
 	}
 	return res;
+}
+
+static void interactive(const argparse_res_t *args, hgbf_eval_io_t eval_io)
+{
+	size_t buffer_size = 128;
+	char *buffer = malloc(buffer_size);
+	const char *const prompt = "BF> ";
+
+	while (true) {
+		fputs(prompt, stdout);
+		fflush(stdout);
+
+		char *buffer_p = buffer;
+		while (true) {
+			const size_t buffer_rest_size = buffer_size - (buffer_p - buffer);
+			if (!fgets(buffer_p, (int)buffer_rest_size, stdin)) {
+				if (buffer_p > buffer)
+					break;
+				else
+					goto quit;
+			}
+			const size_t n = strlen(buffer_p);
+			buffer_p += n;
+			if (n < buffer_rest_size - 1) {
+				if (buffer_p[-1] == '\n')
+					buffer_p[-1] = '\0';
+				break;
+			}
+			const size_t p_off = buffer_p - buffer;
+			buffer = realloc(buffer, (buffer_size += 128));
+			buffer_p = buffer + p_off;
+		}
+
+		hgbf_istream_t *const script =
+			hgbf_istream_open_mem(buffer, buffer_p - buffer);
+		run_script(args, script, eval_io);
+		hgbf_istream_close(script);
+	}
+
+quit:
+	free(buffer);
+}
+
+static int run_script(const argparse_res_t *args,
+	hgbf_istream_t *script, hgbf_eval_io_t eval_io)
+{
+	hgbf_code_t *const code = hgbf_code_compile(script);
+	if (!code) {
+		fprintf(stderr, "%s: syntax error: %s\n", args->program, hgbf_err_read());
+		return EXIT_FAILURE;
+	}
+	const int eval_err = hgbf_eval(code, eval_io);
+	hgbf_code_free(code);
+	if (eval_err) {
+		fprintf(stderr, "%s: runtime error: %s\n", args->program, hgbf_err_read());
+		return EXIT_FAILURE;
+	}
+	return EXIT_SUCCESS;
 }
