@@ -26,6 +26,8 @@ typedef struct {
 	const char *ostream_file;
 	size_t memory_limit;
 	bool interactive;
+	bool dump_code;
+	bool do_not_run;
 } argparse_res_t;
 
 static void init(void);
@@ -138,6 +140,8 @@ static const hgbf_optdef_t optdefs[] = {
 	{'e', "SCRIPT", "execute the SCRIPT string"},
 	{'f', "FILE", "execute code from FILE"},
 	{'i', NULL, "enter interactive mode"},
+	{'d', NULL, "dump instructions"},
+	{'c', NULL, "compile but do not execute"},
 	{'I', "FILE", "use the FILE instead of stdin as input stream"},
 	{'O', "FILE", "use the FILE instead of stdout as output stream"},
 	{'M', "SIZE[K|M|G][i]", "maximum cells (runtime memory) size"},
@@ -148,6 +152,7 @@ static const hgbf_optdef_t optdefs[] = {
 static void getopt_handler(
 	int index, const hgbf_optdef_t *opt, const char *arg, void *param)
 {
+	(void)index;
 	argparse_res_t *const res = param;
 
 	if (!opt)
@@ -211,6 +216,14 @@ static void getopt_handler(
 		res->interactive = true;
 		break;
 
+	case 'd':
+		res->dump_code = true;
+		break;
+
+	case 'c':
+		res->do_not_run = true;
+		break;
+
 	case 'I':
 		res->istream_file = arg;
 		break;
@@ -252,6 +265,8 @@ static argparse_res_t parse_args(int argc, char *argv[])
 		.ostream_file = NULL,
 		.memory_limit = 0,
 		.interactive = false,
+		.dump_code = false,
+		.do_not_run = false,
 	};
 	hgbf_getopt(optdefs, getopt_handler, argc, argv, &res);
 	if (!(res.script_file || res.script_string || res.interactive)) {
@@ -312,7 +327,12 @@ static int run_script(const argparse_res_t *args,
 		fprintf(stderr, "%s: syntax error: %s\n", args->program, hgbf_err_read());
 		return EXIT_FAILURE;
 	}
-	const int eval_err = hgbf_eval(code, eval_io);
+	if (args->dump_code) {
+		puts("------------");
+		hgbf_code_dump(code);
+		puts("------------");
+	}
+	const int eval_err = args->do_not_run ? EXIT_SUCCESS : hgbf_eval(code, eval_io);
 	hgbf_code_free(code);
 	if (eval_err) {
 		fprintf(stderr, "%s: runtime error: %s\n", args->program, hgbf_err_read());

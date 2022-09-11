@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -159,67 +160,191 @@ static void stack_pop(stack_t *stack)
 	stack->size--;
 }
 
-static bool compile(hgbf_istream_t *source, stack_t *blocks, codebuf_t *code)
-{
-	size_t line_number = 1, column_number = 0;
+typedef enum {
+	TOK_NXT, // '>'
+	TOK_PRV, // '<'
+	TOK_INC, // '+'
+	TOK_DEC, // '-'
+	TOK_OUT, // '.'
+	TOK_IN,  // ','
+	TOK_JFZ, // '['
+	TOK_JBN, // ']'
+	TOK_END,
+} token_t;
 
+typedef struct {
+	token_t current_token;
+	hgbf_istream_t *source;
+	size_t line_number;
+	size_t column_number;
+} scanner_t;
+
+static void _scanner_advance(scanner_t *scanner)
+{
 	while (true) {
-		const int c = hgbf_istream_read1(source);
-		column_number++;
+		const int c = hgbf_istream_read1(scanner->source);
+		scanner->column_number++;
 
 		switch (c) {
 		case '>':
-			codebuf_append1(code, (unsigned char)HGBF_OP_NXT);
-			break;
+			scanner->current_token = TOK_NXT;
+			return;
 
 		case '<':
-			codebuf_append1(code, (unsigned char)HGBF_OP_PRV);
-			break;
+			scanner->current_token = TOK_PRV;
+			return;
 
 		case '+':
-			codebuf_append1(code, (unsigned char)HGBF_OP_INC);
-			break;
+			scanner->current_token = TOK_INC;
+			return;
 
 		case '-':
-			codebuf_append1(code, (unsigned char)HGBF_OP_DEC);
-			break;
+			scanner->current_token = TOK_DEC;
+			return;
 
 		case '.':
+			scanner->current_token = TOK_OUT;
+			return;
+
+		case ',':
+			scanner->current_token = TOK_IN;
+			return;
+
+		case '[':
+			scanner->current_token = TOK_JFZ;
+			return;
+
+		case ']':
+			scanner->current_token = TOK_JBN;
+			return;
+
+		default:
+			if (c < 0) {
+				scanner->current_token = TOK_END;
+				return;
+			}
+			if (c == '\n') {
+				scanner->line_number++;
+				scanner->column_number = 0;
+			}
+			break;
+		}
+	}
+}
+
+static void scanner_init(scanner_t *scanner, hgbf_istream_t *source)
+{
+	scanner->source = source;
+	scanner->line_number = 1;
+	scanner->column_number = 0;
+	_scanner_advance(scanner);
+}
+
+static token_t scanner_peek(scanner_t *scanner)
+{
+	return scanner->current_token;
+}
+
+static token_t scanner_next(scanner_t *scanner)
+{
+	const token_t token = scanner->current_token;
+	_scanner_advance(scanner);
+	return token;
+}
+
+static void scanner_drop(scanner_t *scanner)
+{
+	_scanner_advance(scanner);
+}
+
+static bool compile(hgbf_istream_t *source, stack_t *blocks, codebuf_t *code)
+{
+	scanner_t scanner;
+	scanner_init(&scanner, source);
+
+	while (true) {
+		const token_t token = scanner_next(&scanner);
+
+		switch (token) {
+		case TOK_NXT:
+		case TOK_PRV:
+		case TOK_INC:
+		case TOK_DEC:
+		{
+			size_t n = 1;
+			while (scanner_peek(&scanner) == token) {
+				scanner_drop(&scanner);
+				n++;
+			}
+
+			if (n == 1) {
+				static_assert(
+					(int)HGBF_OP_NXT == (int)TOK_NXT &&
+					(int)HGBF_OP_PRV == (int)TOK_PRV &&
+					(int)HGBF_OP_INC == (int)TOK_INC &&
+					(int)HGBF_OP_DEC == (int)TOK_DEC, "");
+				codebuf_append1(code, (unsigned char)token);
+			} else {
+				static_assert(
+					(int)HGBF_OP_NXTn == (int)TOK_NXT + 9 &&
+					(int)HGBF_OP_PRVn == (int)TOK_PRV + 9 &&
+					(int)HGBF_OP_INCn == (int)TOK_INC + 9 &&
+					(int)HGBF_OP_DECn == (int)TOK_DEC + 9, "");
+				codebuf_append1(code, (unsigned char)((int)token + 9));
+				if (token <= TOK_PRV) {
+					const uint16_t n_ = (uint16_t)n;
+					codebuf_append(code, (const unsigned char *)&n, sizeof n_);
+				} else {
+					const uint8_t n_ = (uint16_t)n;
+					codebuf_append(code, (const unsigned char *)&n, sizeof n_);
+				}
+			}
+		}
+			break;
+
+		case TOK_OUT:
 			codebuf_append1(code, (unsigned char)HGBF_OP_OUT);
 			break;
 
-		case ',':
+		case TOK_IN:
 			codebuf_append1(code, (unsigned char)HGBF_OP_IN);
 			break;
 
-		case '[':
+		case TOK_JFZ:
 			codebuf_append1(code, (unsigned char)HGBF_OP_JFZ);
 			stack_push(blocks, code->length);
 			codebuf_append(code, (const unsigned char *)"\0\0\0", 4);
 			break;
 
-		case ']':
+		case TOK_JBN:
 			codebuf_append1(code, (unsigned char)HGBF_OP_JBN);
 			if (stack_empty(blocks)) {
 				hgbf_err_record("%zu:%zu: no matching `[' for this `]'",
-					line_number, column_number);
+					scanner.line_number, scanner.column_number);
 				return false;
 			} else {
 				const size_t pos = stack_top(blocks);
 				stack_pop(blocks);
 				assert(pos < code->length);
 				const uint32_t off = (uint32_t)(code->length - pos);
-				codebuf_append(code, (const unsigned char *)&off, 4);
+				codebuf_append(code, (const unsigned char *)&off, sizeof off);
 				*(uint32_t *)codebuf_ref(code, pos) = off;
 			}
 			break;
 
+		case TOK_END:
+			return true;
+
 		default:
-			if (c < 0)
-				return true;
-			if (c == '\n')
-				line_number++, column_number = 0;
-			break;
+#if !defined NDEBUG
+			abort();
+#elif defined __GNUC__
+			__builtin_unreachable();
+#elif defined _MSC_VER
+			__assume(0);
+#else
+			abort();
+#endif
 		}
 	}
 }
@@ -249,6 +374,50 @@ hgbf_code_t *hgbf_code_compile(hgbf_istream_t *script)
 	codebuf_destroy(&codebuf);
 	stack_destroy(&blocks);
 	return code;
+}
+
+static const char *op_name[] = {
+#define HGBF_OPCODE_LIST_ENTRY(NAME, CODE, OPRD) #NAME,
+	HGBF_OPCODE_LIST
+#undef HGBF_OPCODE_LIST_ENTRY
+};
+
+static const uint8_t operand_width[] = {
+#define HGBF_OPCODE_LIST_ENTRY(NAME, CODE, OPRD) OPRD,
+	HGBF_OPCODE_LIST
+#undef HGBF_OPCODE_LIST_ENTRY
+};
+
+void hgbf_code_dump(const hgbf_code_t *code)
+{
+	for (const unsigned char *p = code->bytes,
+			*const end = p + code->length; p < end; ) {
+		const ptrdiff_t addr = p - code->bytes;
+		const size_t opcode = *p++;
+		if (opcode >= sizeof op_name / sizeof op_name[0])
+			goto bad_opcode;
+		const char *const name = op_name[opcode];
+		const size_t oprd_wid = operand_width[opcode];
+		if (!oprd_wid) {
+			printf("%04tx: %s\n", addr, name);
+			continue;
+		}
+		unsigned int operand;
+		if (oprd_wid == 1)
+			operand = *(const uint8_t *)p;
+		else if (oprd_wid == 2)
+			operand = *(const uint16_t *)p;
+		else if (oprd_wid == 4)
+			operand = *(const uint32_t *)p;
+		else
+			goto bad_opcode;
+		p += oprd_wid;
+		printf("%04tx: %-6s%u\n", addr, name, operand);
+	}
+	return;
+
+bad_opcode:
+	puts("???");
 }
 
 void hgbf_code_free(hgbf_code_t *code)

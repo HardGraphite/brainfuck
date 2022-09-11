@@ -137,6 +137,26 @@ do { \
 		(iter) = _cells_iter_prev_chunk((iter).chunk); \
 } while (false)
 
+#define cells_iter_next_n(iter, n_) \
+for (size_t n = (n_); ; ) { \
+	if ((iter).cell + n <= (iter).chunk_right) { \
+		(iter).cell += n; \
+		break; \
+	} \
+	n -= (iter).chunk_right - (iter).cell + 1; \
+	(iter) = _cells_iter_next_chunk((iter).chunk); \
+}
+
+#define cells_iter_prev_n(iter, n_) \
+for (size_t n = (n_); ; ) { \
+	if ((iter).cell - n >= (iter).chunk_left) { \
+		(iter).cell -= n; \
+		break; \
+	} \
+	n -= (iter).cell - (iter).chunk_left + 1; \
+	(iter) = _cells_iter_prev_chunk((iter).chunk); \
+}
+
 static int eval(
 	const hgbf_code_t *code,
 	hgbf_istream_t *input, hgbf_ostream_t *output,
@@ -152,6 +172,7 @@ static int eval(
 			union {
 				int int_;
 				ptrdiff_t offset;
+				size_t size;
 			} tempval;
 
 		case (unsigned char)HGBF_OP_NXT:
@@ -204,6 +225,26 @@ static int eval(
 
 		case (unsigned char)HGBF_OP_HLT:
 			return 0;
+
+		case (unsigned char)HGBF_OP_NXTn:
+			tempval.size = (size_t)*(uint16_t *)cp;
+			cp += 2;
+			cells_iter_next_n(dp, tempval.size);
+			break;
+
+		case (unsigned char)HGBF_OP_PRVn:
+			tempval.size = (size_t)*(uint16_t *)cp;
+			cp += 2;
+			cells_iter_prev_n(dp, tempval.size);
+			break;
+
+		case (unsigned char)HGBF_OP_INCn:
+			(*cells_iter_ref_cell(dp)) += (signed char)*cp++;
+			break;
+
+		case (unsigned char)HGBF_OP_DECn:
+			(*cells_iter_ref_cell(dp)) -= (signed char)*cp++;
+			break;
 
 		default:
 			hgbf_err_record("internal error: unkown opcode 0x%02x (CP=0x%02x)",
