@@ -12,8 +12,9 @@ option(HGBF_TEST "Add tests." ON)
 option(HGBF_PACK "Enable packing." ON)
 
 set(CMAKE_C_STANDARD 11)
-set(CMAKE_C_STANDARD_REQUIRED TRUE)
-set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
+set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
 
 if(NOT CMAKE_BUILD_TYPE)
 	set(CMAKE_BUILD_TYPE "Release")
@@ -23,6 +24,20 @@ endif()
 aux_source_directory(. hgbf_src)
 add_executable(hgbf ${hgbf_src})
 target_compile_definitions(hgbf PRIVATE "HGBF_VERSION=\"hgbf ${HGBF_VERSION}\"")
+
+if(CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+	target_compile_options(hgbf PRIVATE
+		/W4 /utf-8 /Zc:inline,preprocessor
+		/wd4200 /wd4706
+	)
+	target_compile_definitions(_CRT_SECURE_NO_WARNINGS)
+else() # GCC, Clang, ...
+	target_compile_options(hgbf PRIVATE
+		-pipe -Wall -Wextra -Wpedantic
+		-Werror=incompatible-pointer-types -Werror=return-type
+		-fno-plt -fno-exceptions
+	)
+endif()
 
 if(HGBF_TEST)
 	function(test_file file_name pass_regex)
